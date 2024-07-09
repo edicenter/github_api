@@ -1,6 +1,6 @@
 import sys
 
-from .main import *
+from .github import *
 
 if len(sys.argv) == 1:
     print("USAGE:")

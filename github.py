@@ -1,6 +1,7 @@
 """
 Make HTTP requests to the Github API to list, create or delete repositories.
 """
+import re
 import os
 from pprint import pprint
 
@@ -76,21 +77,24 @@ def create_repo(token, repo, description=None, private=True, organization=None):
         json_response = response.json()
         pprint(json_response)
         clone_url = json_response["clone_url"]
-        print(f"OK. GITHUB RESOSITORY '{repo}' CREATED.")
-        print(
-            "Create a new repository and push an existing repository from the command line:")
-        print("-"*50)
-        print("git init")
-        print("git add .")
-        print("git commit -m \"first commit\"")
+        result = f"OK. GITHUB RESOSITORY '{repo}' CREATED.\n"
+        result += f"URL: {clone_url}\n"
+        result += "-"*50 + "\n\n"
+        result += "git init\n"
+        result += "git add .\n"
+        result += "git commit -m \"first commit\"\n"
         clone_url = urlparse(clone_url)
         owner = json_response["owner"]["login"]
         clone_url = clone_url._replace(
             netloc=f"{owner}@{clone_url.netloc}").geturl()
-        print(f"git remote add github {clone_url}")
-        print("git push -u github main")
-        print("")
-        print("-"*50)
+        result += f"git remote add github {clone_url}\n"
+        result += "git push -u github main\n\n"
+        result += "-"*50 + "\n"
+        return result
+    else:
+        raise Exception(f"Could not create Github repository '{repo}"
+                        f"Response status code: {response.status_code}"
+                        f"Response: \n{response.json()}")
 
 
 def list_repositories(token, organisation=None):
@@ -99,29 +103,22 @@ def list_repositories(token, organisation=None):
 
     https://docs.github.com/en/rest/repos/repos?apiVersion=2022-11-28#list-repositories-for-the-authenticated-user
     """
+    nextPattern = "(?<=<)([\S]*)(?=>; rel=\"Next\")"
 
     if organisation:
         url = baseurl + f"/orgs/{organisation}/repos"
     else:
         url = baseurl + "/user/repos"
 
-    response = requests.get(url,
-                            headers={"Authorization": f"Bearer {token}"})
+    while True:
+        response = requests.get(url,
+                                headers={"Authorization": f"Bearer {token}"})
+        for repo in response.json():
+            yield repo
 
-    pad = 10
-
-    def print_repo_property(repo, property):
-        print(f"{property:<{pad}}:", repo[property])
-
-    for repo in response.json():
-        print_repo_property(repo, "name")
-        print_repo_property(repo, "description")
-        print_repo_property(repo, "private")
-        print_repo_property(repo, "size")
-        print_repo_property(repo, "clone_url")
-        print_repo_property(repo, "language")
-        print()
-
-    print("List Repositories Response:")
-    print("Request URL:", response.url)
-    print("Response Status:", response.status_code)
+        if "Link" in response.headers and \
+            (m := re.search(nextPattern, response.headers['Link'], re.IGNORECASE)) and \
+                m is not None:
+            url = m.group(0)
+        else:
+            break
