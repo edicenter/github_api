@@ -1,8 +1,8 @@
 """
 Make HTTP requests to the Github API to list, create or delete repositories.
 """
-import re
 import os
+import re
 from pprint import pprint
 
 import requests
@@ -101,9 +101,12 @@ def list_repositories(token, organisation=None):
     """
     List repositories for the authenticated user.
 
-    https://docs.github.com/en/rest/repos/repos?apiVersion=2022-11-28#list-repositories-for-the-authenticated-user
+    https://docs.github.com/en/rest/repos/repos?apiVersion=2022-11-28#list-repositories-for-the-authenticated-user    
     """
-    nextPattern = "(?<=<)([\S]*)(?=>; rel=\"Next\")"
+
+    # Pattern to match a value in the HTTP  header 'link'.
+    # Example: <https://api.github.com/repositories/1300192/issues?page=4>; rel="next"
+    nextPattern = "(?<=<)([\\S]*)(?=>; rel=\"next\")"
 
     if organisation:
         url = baseurl + f"/orgs/{organisation}/repos"
@@ -111,14 +114,31 @@ def list_repositories(token, organisation=None):
         url = baseurl + "/user/repos"
 
     while True:
-        response = requests.get(url,
-                                headers={"Authorization": f"Bearer {token}"})
+        response = requests.get(
+            url, headers={"Authorization": f"Bearer {token}"})
+
+        if response.status_code != 200:
+            err_msg = ("Github-API Request fehlgeschlagen;\n\n"
+                       "Erwartet status code 200;\n\n"
+                       f"Github-API '{url=}' antwortet  mit {response.status_code=}\n\n"
+                       f"{response.text=} ")
+            raise Exception(err_msg)
+
         for repo in response.json():
             yield repo
 
-        if "Link" in response.headers and \
-            (m := re.search(nextPattern, response.headers['Link'], re.IGNORECASE)) and \
+        if (m := re.search(nextPattern, response.headers.get('Link', ""), re.IGNORECASE)) and \
                 m is not None:
             url = m.group(0)
         else:
             break
+
+
+if __name__ == "__main__":
+    import os
+    token = os.environ['GITHUB_TOKEN']
+    repo_count = 0
+    for repo in list_repositories(token):
+        repo_count += 1
+        pprint(repo['name'])
+    print(f"{repo_count} repositories found.")
