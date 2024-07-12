@@ -1,5 +1,6 @@
 import os
 import sys
+import webbrowser
 from datetime import datetime
 
 import PySide6.QtCore as core
@@ -127,9 +128,10 @@ class TabRepositoriesTable(widgets.QWidget):
     ]
     TITLE = "All Github repositories"
 
-    def __init__(self):
+    def __init__(self, window: widgets.QMainWindow):
         super().__init__()
 
+        self._window = window
         self._thread: RepoLoaderThread = None
         self._column_labels = [c['label'] for c in self.COLUMNS]
         self._github_repos = []
@@ -138,9 +140,9 @@ class TabRepositoriesTable(widgets.QWidget):
         self.setLayout(layout)
         layout.setSpacing(20)
 
-        btn_load = widgets.QPushButton("Load")
-        btn_load.clicked.connect(self.handler_btn_load_clicked)
-        layout.addWidget(btn_load)
+        self.btn_load = widgets.QPushButton("Load")
+        self.btn_load.clicked.connect(self.handler_btn_load_clicked)
+        layout.addWidget(self.btn_load)
 
         self.table = widgets.QTableView()
         self.table.setSortingEnabled(True)
@@ -163,15 +165,17 @@ class TabRepositoriesTable(widgets.QWidget):
         model_index = self.table.selectionModel().selectedRows()[0]
         repo = self._github_repos[model_index.row()]
         url = repo['clone_url']
-        # print("Selected", repo)
-        menu = widgets.QMenu(self)
-        action = gui.QAction("Copy URL to clipboard", self)
 
-        def copy_to_clipboard():
-            clipboard = gui.QClipboard()
-            clipboard.setText(url)
-        action.triggered.connect(copy_to_clipboard)
+        menu = widgets.QMenu(self)
+
+        action = gui.QAction("Copy URL to clipboard", self)
+        action.triggered.connect(lambda: gui.QClipboard().setText(url))
         menu.addAction(action)
+
+        action = gui.QAction("Open in web browser", self)
+        action.triggered.connect(lambda: webbrowser.open(url))
+        menu.addAction(action)
+
         menu.exec(self.table.mapToGlobal(pos))
 
     # override
@@ -180,6 +184,9 @@ class TabRepositoriesTable(widgets.QWidget):
             self.start_load_repositories()
 
     def start_load_repositories(self):
+        self.btn_load.setDisabled(True)
+        if self.table.model():
+            self.table.model().deleteLater()
         if self._thread is not None:
             self._thread.terminate()
         self._thread = RepoLoaderThread()
@@ -188,6 +195,8 @@ class TabRepositoriesTable(widgets.QWidget):
         self._thread.start()
 
     def show_loading_error(self, e: Exception):
+        self._window.statusBar().showMessage("")
+        self.btn_load.setEnabled(True)
         msgbox = widgets.QMessageBox()
         msgbox.setWindowTitle("Error")
         msgbox.setText("Error loading repository")
@@ -196,6 +205,9 @@ class TabRepositoriesTable(widgets.QWidget):
         msgbox.exec()
 
     def loading_repositories_finished(self, github_repos):
+        self.btn_load.setEnabled(True)
+        self._window.statusBar().showMessage(
+            f"{len(github_repos)} repositories found on Github")
         # Last pushed repos should be displayed first
         github_repos.sort(key=lambda r: r['pushed_at'], reverse=True)
         self._github_repos = []
@@ -364,6 +376,8 @@ class MainWindow(widgets.QMainWindow):
         super().__init__()
         self.setWindowTitle("My App")
 
+        self.setStatusBar(widgets.QStatusBar())
+
         self.setMinimumSize(500, 400)
         self.setContentsMargins(10, 10, 10, 10)
 
@@ -380,11 +394,11 @@ class MainWindow(widgets.QMainWindow):
         tabs.addTab(tab1, tab1.TITLE)
         tabs.setTabToolTip(1, tab1.TITLE)
 
-        tab2 = TabRepositoriesTable()
+        tab2 = TabRepositoriesTable(self)
         tabs.addTab(tab2, tab2.TITLE)
         tabs.setTabToolTip(2, tab2.TITLE)
 
-        tabs.setCurrentIndex(2)
+        # tabs.setCurrentIndex(2)
 
         self.setCentralWidget(tabs)
 
