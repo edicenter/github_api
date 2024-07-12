@@ -1,18 +1,19 @@
-import pathlib
 import os
-import tkinter.messagebox
+import sys
 from datetime import datetime
-from idlelib.tooltip import Hovertip
-from inspect import currentframe, getframeinfo
-from pprint import pprint
-from tkinter import *
-from tkinter.ttk import *
+
+import PySide6.QtCore as core
+import PySide6.QtGui as gui
+import PySide6.QtWidgets as widgets
 
 import github
+import totp
 
 ENV_GITHUB_TOKEN = 'GITHUB_TOKEN'
-repo_columns = ('name',  'private', 'size',
-                'clone_url',   'language', 'description', 'created_at', 'pushed_at')
+
+
+def get_github_totp_secret():
+    return os.environ['GITHUB_TOTP']
 
 
 def get_github_token():
@@ -22,225 +23,384 @@ def get_github_token():
         return None
 
 
-def handler_create_repository():
-    try:
-        GITHUB_TOKEN = get_github_token()
-        repository_name = entryRepoName.get().strip()
-        repository_description = entryRepoDescription.get().strip()
-        if not repository_name:
-            # https://docs.python.org/3/library/tkinter.messagebox.html
-            tkinter.messagebox.showwarning(
-                "Missing input", "Repository name is mandatory")
-            entryRepoName.focus()
-            return
-        print(
-            f"Creating Github repository '{repository_name}' with description '{repository_description}'")
-        result = github.create_repo(GITHUB_TOKEN, repository_name,
-                                    repository_description)
-        txt_result.config(state=NORMAL)
-        txt_result.delete("1.0", END)
-        txt_result.insert("1.0", result)
-        txt_result.config(state=DISABLED)
-    except Exception as e:
-        print(e)
-        tkinter.messagebox.showerror("Error creating repository", e.args)
+class RepoLoaderThread(core.QThread):
+    result = core.Signal(object)
+    error = core.Signal(Exception)
+
+    @core.Slot()
+    def run(self):
+        try:
+            self.result.emit(
+                list(github.list_repositories(get_github_token())))
+        except Exception as e:
+            self.error.emit(e)
 
 
-def populate_repository_treeview():
-    repos = []
-    for repo in github.list_repositories(get_github_token()):
-        repos.append(repo)
+class TableModel(core.QAbstractTableModel):
 
-    # Last pushed repos should be displayed first
-    repos.sort(key=lambda r: r['pushed_at'], reverse=True)
+    def __init__(self, data, column_labels):
+        super().__init__()
+        self._data = data
+        self._column_labels = column_labels
 
-    for repo in repos:
-        tree_repos.insert(parent='',
-                          index=END,
-                          values=(repo[repo_columns[0]],
-                                  repo[repo_columns[1]],
-                                  repo[repo_columns[2]],  # size
-                                  repo[repo_columns[3]],
-                                  repo[repo_columns[4]],
-                                  repo[repo_columns[5]],
-                                  repo[repo_columns[6]],
-                                  repo[repo_columns[7]]))
-    return len(repos)
+    def headerData(self, section, orientation, role=core.Qt.DisplayRole):
+        if orientation == core.Qt.Horizontal and role == core.Qt.DisplayRole:
+            return self._column_labels[section]
+        return super().headerData(section, orientation, role)
 
+    def sort(self, column_index: int, sort_order: gui.Qt.SortOrder):
+        self._data.sort(
+            key=lambda row: row[column_index], reverse=sort_order.value)
+        self.layoutChanged.emit()
 
-def handler_notebook_tab_changed(ev: Event):
-    notebook: Notebook = ev.widget
-    tab_index = notebook.index("current")
-    tab_text: str = notebook.tab(notebook.select(), "text")
-    print("Selected notebook tab:", f"{tab_index=}", f"{tab_text=}")
-    if tab_text.startswith("Create"):
-        if (get_github_token()):
-            variable_statusbar.set(
-                f"Environment variable {ENV_GITHUB_TOKEN} found.")
-        else:
-            variable_statusbar.set(
-                f"WARNING: Environment variable {ENV_GITHUB_TOKEN} not found.")
-    elif tab_text.startswith("List"):
-        variable_statusbar.set("Fetching repositories...")
-        window.update()
-        num_repos = populate_repository_treeview()
-        variable_statusbar.set(f"{num_repos} Github repositories")
+    def rowCount(self, index):
+        # The length of the outer list.
+        return len(self._data)
 
+    def columnCount(self, index):
+        # The following takes the first sub-list, and returns
+        # the length (only works if all rows are an equal length)
+        return len(self._data[0])
 
-window = Tk()
-window.iconbitmap(pathlib.Path(__file__).parent / 'github.ico')
-window.minsize(400, 400)
-window.title("Github Repository Manager")
-window.rowconfigure(0, weight=1)
-window.columnconfigure(0, weight=1)
+    def data(self, index, role):
+        value = self._data[index.row()][index.column()]
 
+        if role == core.Qt.ItemDataRole.DisplayRole:
+            # See below for the nested-list data structure.
+            # .row() indexes into the outer list,
+            # .column() indexes into the sub-list
+            # Perform per-type checks and render accordingly.
+            if isinstance(value, datetime):
+                # Render time to YYY-MM-DD.
+                return value.strftime("%d.%m.%Y")
+            # if isinstance(value, float):
+            #     # Render float to 2 dp
+            #     return "%.2f" % value
+            # Default (anything not captured above: e.g. int)
+            return value
 
-def copy_to_clipboard(widget: Tk, text: str):
-    # widget.withdraw()
-    widget.clipboard_clear()
-    widget.clipboard_append(text)
-    widget.update()  # now it stays on the clipboard after the window is closed
+        # elif role == core.Qt.ItemDataRole.BackgroundRole and index.column() == 2:
+        #     return gui.QColor(core.Qt.GlobalColor.yellow)
 
+        if role == core.Qt.ItemDataRole.TextAlignmentRole:
+            if isinstance(value, int) or isinstance(value, float):
+                return core.Qt.AlignmentFlag.AlignVCenter | core.Qt.AlignmentFlag.AlignRight
 
-myTip = Hovertip(window, 'This is \na multiline tooltip.', hover_delay=1000)
+        # if role == core.Qt.ItemDataRole.FontRole:
+        #     ...
 
-aMenu = Menu(window, tearoff=0)
-# aMenu.add_command(label='Delete', command=None)
-aMenu.add_command(label='Copy URL',
-                  command=lambda:
-                  # print(tree_repos.set(tree_repos.focus()))
-                  copy_to_clipboard(window, tree_repos.set(
-                      tree_repos.selection()[0])['clone_url'])
-                  )
+        # if role == core.Qt.ItemDataRole.ForegroundRole:
+        #     if (isinstance(value, int) or isinstance(value, float)) and value < 0:
+        #         return gui.QColor(core.Qt.GlobalColor.red)
 
-variable_statusbar = StringVar()
+        # if role == core.Qt.ItemDataRole.DecorationRole:
+        #     if isinstance(value, datetime):
+        #         return gui.QIcon(str(curdir / "res" / "calendar-month.png"))
+        #     elif isinstance(value, bool):
+        #         if value:
+        #             return gui.QIcon(str(curdir / "res" / "tick.png"))
+        #         else:
+        #             return gui.QIcon(str(curdir / "res" / "cross.png"))
+        #     elif isinstance(value, int) or isinstance(value, float):
+        #         value = int(value)
 
+        #         value = max(-5, value)
+        #         value = min(5, value)
+        #         value = value+5
 
-# https://docs.python.org/3/library/tkinter.ttk.html#tkinter.ttk.Notebook
-notebook = Notebook(window)
-notebook.grid(row=0, column=0, sticky=(N, S, E, W))
-notebook.bind('<<NotebookTabChanged>>', handler_notebook_tab_changed)
-
-# STATUS BAR
-Label(window, textvariable=variable_statusbar).grid(
-    row=1, column=0)
-
-# CREATE A NEW REPOSITORY
-frame1 = Frame(window, padding=10)
-frame1.rowconfigure([0, 1, 2, 3], pad=10)
-frame1.rowconfigure(3, weight=1)
-frame1.columnconfigure(0, pad=10)
-frame1.columnconfigure(1, pad=10, weight=1)
-
-notebook.add(frame1, text="Create a new repository")
-
-Label(frame1, text="Repository name: ").grid(row=0, column=0, sticky='e')
-entryRepoName = Entry(frame1)
-entryRepoName.grid(row=0, column=1, sticky='we')
-entryRepoName.focus()
-
-Label(frame1, text="Repository description: ").grid(
-    row=1, column=0, sticky='e')
-entryRepoDescription = Entry(frame1, width=100)
-entryRepoDescription.grid(row=1, column=1, sticky='we')
-
-btnCreate = Button(frame1,
-                   text="Create repository on Github",
-                   command=handler_create_repository)
-btnCreate.grid(row=2, columnspan=2)
-
-txt_result = Text(frame1,
-                  exportselection=True,
-                  bg="#EEE",
-                  selectbackground='#00F',
-                  selectforeground='#fff')
-txt_result.grid(row=3, columnspan=2, sticky='nswe')
-txt_result.config(state=DISABLED)
+        #         return gui.QColor(COLORS[value])
 
 
-# LIST ALL REPOSITORIES
-frame2 = Frame(window, padding=10)
-frame2.rowconfigure(0, pad=10, weight=1)
-frame2.columnconfigure(0, pad=10, weight=1)
+class TabRepositoriesTable(widgets.QWidget):
 
-notebook.add(frame2, text="List all repositories")
+    COLUMNS = [
+        {'property': 'name', 'label': 'Name'},
+        {'property': 'visibility', 'label': 'Visibility'},
+        {'property': 'size', 'label': 'Size', 'convert_func': int},
+        {'property': 'clone_url', 'label': 'URL'},
+        {'property': 'language', 'label': 'Language'},
+        {'property': 'created_at', 'label': 'Date Created',
+            'convert_func': datetime.fromisoformat},
+        {'property': 'pushed_at', 'label': 'Date pushed',
+            'convert_func': datetime.fromisoformat},
+        {'property': 'description', 'label': 'Description'},
+    ]
+    TITLE = "All Github repositories"
+
+    def __init__(self):
+        super().__init__()
+
+        self._thread: RepoLoaderThread = None
+        self._column_labels = [c['label'] for c in self.COLUMNS]
+        self._github_repos = []
+
+        layout = widgets.QVBoxLayout()
+        self.setLayout(layout)
+        layout.setSpacing(20)
+
+        btn_load = widgets.QPushButton("Load")
+        btn_load.clicked.connect(self.handler_btn_load_clicked)
+        layout.addWidget(btn_load)
+
+        self.table = widgets.QTableView()
+        self.table.setSortingEnabled(True)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setSelectionMode(
+            widgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setSelectionBehavior(
+            widgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setContextMenuPolicy(
+            core.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(
+            self.handler_table_context_menu_requested)
+        layout.addWidget(self.table)
+
+    def handler_btn_load_clicked(self):
+        self.start_load_repositories()
+
+    def handler_table_context_menu_requested(self, pos: core.QPoint):
+        # self.table.rowAt(pos.y)
+        model_index = self.table.selectionModel().selectedRows()[0]
+        repo = self._github_repos[model_index.row()]
+        url = repo['clone_url']
+        # print("Selected", repo)
+        menu = widgets.QMenu(self)
+        action = gui.QAction("Copy URL to clipboard", self)
+
+        def copy_to_clipboard():
+            clipboard = gui.QClipboard()
+            clipboard.setText(url)
+        action.triggered.connect(copy_to_clipboard)
+        menu.addAction(action)
+        menu.exec(self.table.mapToGlobal(pos))
+
+    # override
+    def showEvent(self, event: gui.QShowEvent):
+        if not self.table.model():
+            self.start_load_repositories()
+
+    def start_load_repositories(self):
+        if self._thread is not None:
+            self._thread.terminate()
+        self._thread = RepoLoaderThread()
+        self._thread.result.connect(self.loading_repositories_finished)
+        self._thread.error.connect(self.show_loading_error)
+        self._thread.start()
+
+    def show_loading_error(self, e: Exception):
+        msgbox = widgets.QMessageBox()
+        msgbox.setWindowTitle("Error")
+        msgbox.setText("Error loading repository")
+        msgbox.setInformativeText(e.args)
+        msgbox.setDetailedText(e)
+        msgbox.exec()
+
+    def loading_repositories_finished(self, github_repos):
+        # Last pushed repos should be displayed first
+        github_repos.sort(key=lambda r: r['pushed_at'], reverse=True)
+        self._github_repos = []
+        for row_index, repo in enumerate(github_repos):
+            row = dict()
+            for column_index, column in enumerate(self.COLUMNS):
+                property = column['property']
+                value = repo[property]
+                if (convert_func := column.get('convert_func')) and convert_func:
+                    value = convert_func(value)
+                row[property] = value
+            self._github_repos.append(row)
+
+        data = [[*row.values()] for row in self._github_repos]
+        self.table.setModel(TableModel(data, self._column_labels))
+        self.table.resizeColumnsToContents()
 
 
-def handler_tree_repos_right_click(event):
-    iid = tree_repos.identify_row(event.y)
-    if iid:
-        # mouse pointer over item
-        tree_repos.selection_set(iid)
+class TabTOTP(widgets.QWidget):
+    TITLE = "TOTP"
 
-        # frameinfo = getframeinfo(currentframe())
-        # print(frameinfo.filename, frameinfo.lineno)
-        # pprint(tree_repos.set(iid))
+    def __init__(self):
+        super().__init__()
+        self.setAutoFillBackground(True)
 
-        aMenu.post(event.x_root, event.y_root)
+        self._progress_last = None
+        self._totp_value = None
+
+        layout = widgets.QVBoxLayout()
+        self.setLayout(layout)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        lbl = widgets.QLabel("TOTP - Time based one time password")
+        lbl.setAlignment(core.Qt.AlignmentFlag.AlignHCenter)
+        font = lbl.font()
+        font.setPointSize(16)
+        lbl.setFont(font)
+        layout.addWidget(lbl)
+
+        lbl = widgets.QLabel(
+            """
+            Click on the button below to copy the TOTP to the clipboard.            
+            You will need it, for example, to confirm deleting a repository.
+            """)
+        lbl.setAlignment(core.Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(lbl)
+
+        btn = widgets.QPushButton("Copy")
+        btn.clicked.connect(self.handler_copy_button_clicked)
+        layout.addWidget(btn)
+
+        self.lbl_totp = widgets.QLabel("---")
+        font = self.lbl_totp.font()
+        font.setPixelSize(40)
+        self.lbl_totp.setFont(font)
+        layout.addWidget(self.lbl_totp, 1, core.Qt.AlignmentFlag.AlignHCenter)
+
+        self.progressbar = widgets.QProgressBar()
+        self.progressbar.setMinimum(0)
+        self.progressbar.setMaximum(29)
+        layout.addWidget(self.progressbar)
+
+        self.timer = core.QTimer()
+        self.timer.setInterval(1000)
+        self.timer.timeout.connect(self.handler_timeout)
+        self._count = 0
+
+    def handler_copy_button_clicked(self):
+        clipboard = gui.QClipboard()
+        clipboard.setText(self._totp_value)
+
+    def update_widgets(self):
+        progress_current = totp.get_progress()
+        self.progressbar.setValue(progress_current)
+        if self._progress_last != progress_current:
+            self._progress_last = progress_current
+            self._totp_value = totp.get_totp_token(get_github_totp_secret())
+            self.lbl_totp.setText(self._totp_value)
+
+    def handler_timeout(self):
+        self._count += 1
+        self.update_widgets()
+
+    # def event(self, event: core.QEvent):
+    #     print("TAB1", "event", event)
+
+    def showEvent(self, event: gui.QShowEvent):
+        print("TAB1", "showEvent", event)
+        self.update_widgets()
+        self.timer.start()
+
+    def hideEvent(self, event: gui.QHideEvent):
+        print("TAB1", "hideEvent", event)
+        self.timer.stop()
 
 
-tree_repos = Treeview(frame2,
-                      show='headings',
-                      selectmode='browse',
-                      height=18)
-tree_repos.bind("<Button-3>", handler_tree_repos_right_click)
+class TabCreateRepository(widgets.QWidget):
+    TITLE = "Create new repository"
+
+    def __init__(self):
+        super().__init__()
+
+        layout = widgets.QGridLayout()
+        self.setLayout(layout)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        layout.addWidget(widgets.QLabel("Repository name: "),
+                         0, 0, core.Qt.AlignmentFlag.AlignRight)
+        layout.addWidget(widgets.QLabel("Repository description:"),
+                         1, 0, core.Qt.AlignmentFlag.AlignRight)
+
+        txt_repository_name = widgets.QLineEdit()
+        # self.txt_repository_name.setFocusPolicy(
+        #     core.Qt.FocusPolicy.StrongFocus)
+        layout.addWidget(txt_repository_name, 0, 1)
+
+        txt_repository_description = widgets.QLineEdit(self)
+        layout.addWidget(txt_repository_description, 1, 1)
+
+        txt_info = widgets.QTextEdit(
+            """
+            Once you've created a new repository, you will see here the GIT commands 
+            you can use to initialize Git version control for your project. 
+            These commands are executed in the directory containing your code.
+            """)
+        txt_info.setReadOnly(True)
+        layout.setRowStretch(2, 1)
+        layout.addWidget(txt_info, 2, 0, 1, 2)
+
+        btn_create_new_repository = widgets.QPushButton(
+            "Create new Github repository")
+        layout.addWidget(btn_create_new_repository, 3,
+                         0, -1, -1, core.Qt.AlignmentFlag.AlignCenter)
+
+        def handler_btn_clicked():
+            try:
+                GITHUB_TOKEN = get_github_token()
+                repository_name = txt_repository_name.text().strip()
+                repository_description = txt_repository_description.text().strip()
+                if not repository_name:
+                    widgets.QMessageBox.critical(
+                        self, "Missing input", "Repository name is mandatory")
+                    txt_repository_name.setFocus()
+                    return
+                result = github.create_repo(
+                    GITHUB_TOKEN, repository_name, repository_description)
+                txt_info.clear()
+                txt_info.append(f"Github repository '{repository_name}' with description '{
+                                repository_description}' created.\n\n")
+                txt_info.append(result)
+            except Exception as e:
+                msgbox = widgets.QMessageBox()
+                msgbox.setWindowTitle("Error")
+                msgbox.setText("Error creating repository")
+                msgbox.setInformativeText("here informativ text")
+                msgbox.setDetailedText(e.args)
+                msgbox.exec()
+
+        btn_create_new_repository.clicked.connect(handler_btn_clicked)
 
 
-tree_repos['columns'] = repo_columns
-tree_repos.column('private', width=40)
-tree_repos.column('size', anchor=E, width=40, minwidth=25)
-tree_repos.column('language', width=50)
-# tree.column('zone_id',  width=110, minwidth=100)
-# tree.column('#0', width=120, minwidth=25)
-# tree.column('#0', width=120, minwidth=25)
+class MainWindow(widgets.QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("My App")
+
+        self.setMinimumSize(500, 400)
+        self.setContentsMargins(10, 10, 10, 10)
+
+        tabs = widgets.QTabWidget()
+        tabs.currentChanged.connect(self.handler_tab_page_changed)
+
+        tabs.setTabPosition(widgets.QTabWidget.TabPosition.North)
+        # tabs.setMovable(True)
+
+        tab0 = TabCreateRepository()
+        tabs.addTab(tab0, tab0.TITLE)
+
+        tab1 = TabTOTP()
+        tabs.addTab(tab1, tab1.TITLE)
+        tabs.setTabToolTip(1, tab1.TITLE)
+
+        tab2 = TabRepositoriesTable()
+        tabs.addTab(tab2, tab2.TITLE)
+        tabs.setTabToolTip(2, tab2.TITLE)
+
+        tabs.setCurrentIndex(2)
+
+        self.setCentralWidget(tabs)
+
+        self.resize(1000, 800)
+
+    def handler_tab_page_changed(self, page_index):
+        print("handler_tab_page_changed", "Tab page:", page_index)
+        # if page_index == 0:
+        #     self.txt_repository_name.setFocus()
 
 
-def handler_sort_treeview(tv, col, reverse, conversion_func):
-    l = [(tv.set(k, col), k) for k in tv.get_children('')]
-    l.sort(key=lambda t: conversion_func(t[0]), reverse=reverse)
-
-    # rearrange items in sorted positions
-    for index, (_, k) in enumerate(l):
-        tv.move(k, '', index)
-
-    # reverse sort next time
-    tv.heading(col, command=lambda:
-               handler_sort_treeview(tv, col, not reverse, conversion_func))
-
-
-def create_sort_handler(col, conversion_func=str):
-    def sort():
-        handler_sort_treeview(tree_repos, col, False, conversion_func)
-    return sort
-
-
-tree_repos.heading('name', text='Name', anchor=W,
-                   command=create_sort_handler('name'))
-tree_repos.heading('private', text='Private?', anchor=W)
-tree_repos.heading('clone_url', text='URL', anchor=W)
-tree_repos.heading('description', text='Description', anchor=W)
-tree_repos.heading('size', text='Size', anchor=E,
-                   command=create_sort_handler('size', int))
-tree_repos.heading('language', text='Language', anchor=W,
-                   command=create_sort_handler('language'))
-tree_repos.heading('created_at', text='Created',
-                   anchor=W, command=create_sort_handler('created_at'))
-tree_repos.heading('pushed_at', text='Pushed', anchor=W,
-                   command=create_sort_handler('pushed_at'))
-# tree_repos.tag_configure('zone', background='#0E0')
-
-
-tree_repos.grid(row=0, column=0, sticky='nswe')
-
-scrollbar = Scrollbar(
-    frame2,
-    orient='vertical',
-    command=tree_repos.yview
-
-
-)
-scrollbar.grid(row=0, column=1, sticky='ns')
-
-tree_repos.configure(yscrollcommand=scrollbar.set)
-
-window.mainloop()
+app = widgets.QApplication(sys.argv)
+app.setStyle("Fusion")
+font = app.font()
+font.setPointSize(12)
+app.setFont(font)
+window = MainWindow()
+window.show()
+app.exec()
