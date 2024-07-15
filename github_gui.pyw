@@ -1,6 +1,7 @@
 import os
 import sys
 import webbrowser
+import webbrowser
 from datetime import datetime
 
 import PySide6.QtCore as core
@@ -129,8 +130,11 @@ class TabRepositoriesTable(widgets.QWidget):
     TITLE = "All Github repositories"
 
     def __init__(self, window: widgets.QMainWindow):
+
+    def __init__(self, window: widgets.QMainWindow):
         super().__init__()
 
+        self._window = window
         self._window = window
         self._thread: RepoLoaderThread = None
         self._column_labels = [c['label'] for c in self.COLUMNS]
@@ -140,6 +144,9 @@ class TabRepositoriesTable(widgets.QWidget):
         self.setLayout(layout)
         layout.setSpacing(20)
 
+        self.btn_load = widgets.QPushButton("Load")
+        self.btn_load.clicked.connect(self.handler_btn_load_clicked)
+        layout.addWidget(self.btn_load)
         self.btn_load = widgets.QPushButton("Load")
         self.btn_load.clicked.connect(self.handler_btn_load_clicked)
         layout.addWidget(self.btn_load)
@@ -169,6 +176,11 @@ class TabRepositoriesTable(widgets.QWidget):
         menu = widgets.QMenu(self)
 
         action = gui.QAction("Copy URL to clipboard", self)
+        action.triggered.connect(lambda: gui.QClipboard().setText(url))
+        menu.addAction(action)
+
+        action = gui.QAction("Open in web browser", self)
+        action.triggered.connect(lambda: webbrowser.open(url))
         action.triggered.connect(lambda: gui.QClipboard().setText(url))
         menu.addAction(action)
 
@@ -204,6 +216,9 @@ class TabRepositoriesTable(widgets.QWidget):
         msgbox.exec()
 
     def loading_repositories_finished(self, github_repos):
+        self.btn_load.setEnabled(True)
+        self._window.statusBar().showMessage(
+            f"{len(github_repos)} repositories found on Github")
         self.btn_load.setEnabled(True)
         self._window.statusBar().showMessage(
             f"{len(github_repos)} repositories found on Github")
@@ -377,6 +392,8 @@ class MainWindow(widgets.QMainWindow):
 
         self.setStatusBar(widgets.QStatusBar())
 
+        self.setStatusBar(widgets.QStatusBar())
+
         self.setMinimumSize(500, 400)
         self.setContentsMargins(10, 10, 10, 10)
 
@@ -394,9 +411,11 @@ class MainWindow(widgets.QMainWindow):
         tabs.setTabToolTip(1, tab1.TITLE)
 
         tab2 = TabRepositoriesTable(self)
+        tab2 = TabRepositoriesTable(self)
         tabs.addTab(tab2, tab2.TITLE)
         tabs.setTabToolTip(2, tab2.TITLE)
 
+        # tabs.setCurrentIndex(2)
         # tabs.setCurrentIndex(2)
 
         self.setCentralWidget(tabs)
