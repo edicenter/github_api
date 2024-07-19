@@ -10,7 +10,7 @@ import PySide6.QtWidgets as widgets
 import github
 import totp
 
-ENV_GITHUB_TOKEN = 'GITHUB_TOKEN'
+GITHUB_TOKEN = 'GITHUB_TOKEN'
 
 
 def get_github_totp_secret():
@@ -18,8 +18,8 @@ def get_github_totp_secret():
 
 
 def get_github_token():
-    if ENV_GITHUB_TOKEN in os.environ:
-        return os.environ[ENV_GITHUB_TOKEN]
+    if GITHUB_TOKEN in os.environ:
+        return os.environ[GITHUB_TOKEN]
     else:
         return None
 
@@ -307,8 +307,9 @@ class TabTOTP(widgets.QWidget):
 class TabCreateRepository(widgets.QWidget):
     TITLE = "Create new repository"
 
-    def __init__(self):
+    def __init__(self, window):
         super().__init__()
+        self._window = window
 
         layout = widgets.QGridLayout()
         self.setLayout(layout)
@@ -328,6 +329,11 @@ class TabCreateRepository(widgets.QWidget):
         txt_repository_description = widgets.QLineEdit(self)
         layout.addWidget(txt_repository_description, 1, 1)
 
+        btn_create_new_repository = widgets.QPushButton(
+            "Create new Github repository")
+        layout.addWidget(btn_create_new_repository, 2,
+                         1, core.Qt.AlignmentFlag.AlignLeft)
+
         txt_info = widgets.QTextEdit(
             """
             Once you've created a new repository, you will see here the GIT commands 
@@ -335,17 +341,31 @@ class TabCreateRepository(widgets.QWidget):
             These commands are executed in the directory containing your code.
             """)
         txt_info.setReadOnly(True)
-        layout.setRowStretch(2, 1)
-        layout.addWidget(txt_info, 2, 0, 1, 2)
+        p = txt_info.palette()
+        p.setColor(gui.QPalette.ColorRole.Base,
+                   gui.QColor.fromRgb(240, 240, 240))
+        txt_info.setPalette(p)
 
-        btn_create_new_repository = widgets.QPushButton(
-            "Create new Github repository")
-        layout.addWidget(btn_create_new_repository, 3,
-                         0, -1, -1, core.Qt.AlignmentFlag.AlignCenter)
+        # txt_info.setTextBackgroundColor(gui.QColor(core.Qt.GlobalColor.red))
+        layout.setRowStretch(3, 1)
+        layout.addWidget(txt_info, 3, 0, 1, 2)
+
+        if get_github_token():
+            self._window.statusBar().showMessage(
+                f"Environment variable '{GITHUB_TOKEN}' found.")
+        else:
+            self._window.statusBar().showMessage(
+                f"WARNING: System environment variable '{GITHUB_TOKEN}' not found.")
 
         def handler_btn_clicked():
             try:
-                GITHUB_TOKEN = get_github_token()
+                github_token = get_github_token()
+
+                if not github_token:
+                    widgets.QMessageBox.critical(
+                        self, f"{GITHUB_TOKEN} missing", f"System environment variable '{GITHUB_TOKEN}' not found on this computer!")
+                    return
+
                 repository_name = txt_repository_name.text().strip()
                 repository_description = txt_repository_description.text().strip()
                 if not repository_name:
@@ -354,7 +374,7 @@ class TabCreateRepository(widgets.QWidget):
                     txt_repository_name.setFocus()
                     return
                 result = github.create_repo(
-                    GITHUB_TOKEN, repository_name, repository_description)
+                    github_token, repository_name, repository_description)
                 txt_info.clear()
                 txt_info.append(f"Github repository '{repository_name}' with description '{
                                 repository_description}' created.\n\n")
@@ -373,7 +393,7 @@ class TabCreateRepository(widgets.QWidget):
 class MainWindow(widgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("My App")
+        self.setWindowTitle("Github Repository Manager")
 
         self.setStatusBar(widgets.QStatusBar())
 
@@ -386,7 +406,7 @@ class MainWindow(widgets.QMainWindow):
         tabs.setTabPosition(widgets.QTabWidget.TabPosition.North)
         # tabs.setMovable(True)
 
-        tab0 = TabCreateRepository()
+        tab0 = TabCreateRepository(self)
         tabs.addTab(tab0, tab0.TITLE)
 
         tab1 = TabTOTP()
