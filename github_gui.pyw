@@ -1,4 +1,5 @@
 import os
+import pathlib
 import sys
 import webbrowser
 from datetime import datetime
@@ -431,9 +432,14 @@ class MainWindow(widgets.QMainWindow):
 
 app = widgets.QApplication(sys.argv)
 app.setStyle("Fusion")
+
+icon = gui.QIcon(str(pathlib.Path(__file__).parent / "github.ico"))
+app.setWindowIcon(icon)
+
 font = app.font()
 font.setPointSize(12)
 app.setFont(font)
+
 window = MainWindow()
 window.show()
 app.exec()
