@@ -12,28 +12,30 @@ import github
 import totp
 
 GITHUB_TOKEN = 'GITHUB_TOKEN'
+GITHUB_TOTP = 'GITHUB_TOTP'
 
 
-def get_github_totp_secret():
-    return os.environ['GITHUB_TOTP']
+def get_github_totp_token():
+    return os.environ.get(GITHUB_TOTP, None)
 
 
 def get_github_token():
-    if GITHUB_TOKEN in os.environ:
-        return os.environ[GITHUB_TOKEN]
-    else:
-        return None
+    return os.environ.get(GITHUB_TOKEN, None)
 
 
 class RepoLoaderThread(core.QThread):
     result = core.Signal(object)
     error = core.Signal(Exception)
 
+    def __init__(self, token: str):
+        super().__init__()
+        self._token = token
+
     @core.Slot()
     def run(self):
         try:
             self.result.emit(
-                list(github.list_repositories(get_github_token())))
+                list(github.list_repositories(self._token)))
         except Exception as e:
             self.error.emit(e)
 
@@ -185,11 +187,15 @@ class TabRepositoriesTable(widgets.QWidget):
             self.start_load_repositories()
 
     def start_load_repositories(self):
+        token = get_github_token()
+        if token is None:
+            self._window.statusBar().showMessage(
+                f"Environment variable '{GITHUB_TOKEN}' not found. Repositories cannot be generated.")
         self.btn_load.setDisabled(True)
         self._window.statusBar().showMessage("")
         if self.table.model():
             self.table.model().deleteLater()
-        self._thread = RepoLoaderThread()
+        self._thread = RepoLoaderThread(token)
         self._thread.result.connect(self.loading_repositories_finished)
         self._thread.error.connect(self.show_loading_error)
         self._thread.finished.connect(self._thread.deleteLater)
@@ -229,8 +235,9 @@ class TabRepositoriesTable(widgets.QWidget):
 class TabTOTP(widgets.QWidget):
     TITLE = "TOTP"
 
-    def __init__(self):
+    def __init__(self, window: widgets.QMainWindow):
         super().__init__()
+        self._window = window
         self.setAutoFillBackground(True)
 
         self._progress_last = None
@@ -281,11 +288,13 @@ class TabTOTP(widgets.QWidget):
         clipboard.setText(self._totp_value)
 
     def update_widgets(self):
+        if self._totp_token is None:
+            return
         progress_current = totp.get_progress()
         self.progressbar.setValue(progress_current)
         if self._progress_last != progress_current:
             self._progress_last = progress_current
-            self._totp_value = totp.get_totp_token(get_github_totp_secret())
+            self._totp_value = totp.get_totp_token(self._totp_token)
             self.lbl_totp.setText(self._totp_value)
 
     def handler_timeout(self):
@@ -297,6 +306,12 @@ class TabTOTP(widgets.QWidget):
 
     def showEvent(self, event: gui.QShowEvent):
         print("TAB1", "showEvent", event)
+        self._window.statusBar().showMessage("")
+        self._totp_token = get_github_totp_token()
+        if self._totp_token is None:
+            self._window.statusBar().showMessage(
+                f"Environment variable '{GITHUB_TOTP}' not found. TOTP cannot be generated.")
+            return
         self.update_widgets()
         self.timer.start()
 
@@ -317,23 +332,37 @@ class TabCreateRepository(widgets.QWidget):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
 
+        row = 0
         layout.addWidget(widgets.QLabel("Repository name: "),
-                         0, 0, core.Qt.AlignmentFlag.AlignRight)
-        layout.addWidget(widgets.QLabel("Repository description:"),
-                         1, 0, core.Qt.AlignmentFlag.AlignRight)
-
+                         row, 0, core.Qt.AlignmentFlag.AlignRight)
         txt_repository_name = widgets.QLineEdit()
         # self.txt_repository_name.setFocusPolicy(
         #     core.Qt.FocusPolicy.StrongFocus)
-        layout.addWidget(txt_repository_name, 0, 1)
+        layout.addWidget(txt_repository_name, row, 1)
 
+        row += 1
+
+        layout.addWidget(widgets.QLabel("Repository description:"),
+                         row, 0, core.Qt.AlignmentFlag.AlignRight)
         txt_repository_description = widgets.QLineEdit(self)
-        layout.addWidget(txt_repository_description, 1, 1)
+        layout.addWidget(txt_repository_description, row, 1)
+
+        row += 1
+
+        layout.addWidget(widgets.QLabel("Private?:"),
+                         row, 0, core.Qt.AlignmentFlag.AlignRight)
+        checkbox_private = widgets.QCheckBox(self)
+        checkbox_private.setChecked(True)
+        layout.addWidget(checkbox_private, row, 1)
+
+        row += 1
 
         btn_create_new_repository = widgets.QPushButton(
             "Create new Github repository")
-        layout.addWidget(btn_create_new_repository, 2,
+        layout.addWidget(btn_create_new_repository, row,
                          1, core.Qt.AlignmentFlag.AlignLeft)
+
+        row += 1
 
         txt_info = widgets.QTextEdit(
             """
@@ -348,15 +377,12 @@ class TabCreateRepository(widgets.QWidget):
         txt_info.setPalette(p)
 
         # txt_info.setTextBackgroundColor(gui.QColor(core.Qt.GlobalColor.red))
-        layout.setRowStretch(3, 1)
-        layout.addWidget(txt_info, 3, 0, 1, 2)
+        layout.setRowStretch(row, 1)
+        layout.addWidget(txt_info, row, 0, 1, 2)
 
-        if get_github_token():
+        if get_github_token() is None:
             self._window.statusBar().showMessage(
                 f"Environment variable '{GITHUB_TOKEN}' found.")
-        else:
-            self._window.statusBar().showMessage(
-                f"WARNING: System environment variable '{GITHUB_TOKEN}' not found.")
 
         def handler_btn_clicked():
             try:
@@ -374,8 +400,10 @@ class TabCreateRepository(widgets.QWidget):
                         self, "Missing input", "Repository name is mandatory")
                     txt_repository_name.setFocus()
                     return
-                result = github.create_repo(
-                    github_token, repository_name, repository_description)
+                result = github.create_repo(token=github_token,
+                                            repo=repository_name,
+                                            description=repository_description,
+                                            private=checkbox_private.isChecked())
                 txt_info.clear()
                 txt_info.append(f"Github repository '{repository_name}' with description '{
                                 repository_description}' created.\n\n")
@@ -389,6 +417,9 @@ class TabCreateRepository(widgets.QWidget):
                 msgbox.exec()
 
         btn_create_new_repository.clicked.connect(handler_btn_clicked)
+
+    def showEvent(self, event: gui.QShowEvent):
+        self._window.statusBar().showMessage("")
 
 
 class MainWindow(widgets.QMainWindow):
@@ -410,7 +441,7 @@ class MainWindow(widgets.QMainWindow):
         tab0 = TabCreateRepository(self)
         tabs.addTab(tab0, tab0.TITLE)
 
-        tab1 = TabTOTP()
+        tab1 = TabTOTP(self)
         tabs.addTab(tab1, tab1.TITLE)
         tabs.setTabToolTip(1, tab1.TITLE)
 
@@ -430,8 +461,11 @@ class MainWindow(widgets.QMainWindow):
         #     self.txt_repository_name.setFocus()
 
 
+os.environ["QT_QPA_PLATFORM"] = "windows:darkmode=0"
+
 app = widgets.QApplication(sys.argv)
 app.setStyle("Fusion")
+
 
 icon = gui.QIcon(str(pathlib.Path(__file__).parent / "github.ico"))
 app.setWindowIcon(icon)
