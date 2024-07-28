@@ -10,26 +10,38 @@ The program expects to find the `Github Token` in the environment variable `GITH
 
 Tested with Python version 12.4
 
-Required Python package: `requests`
-
-        python -m pip install requests
+Required Python packages: `requests`, `pyside6`
 
 https://pypi.org/project/requests/
 
 `githu_gui.pyw` is a GUI where you can create new and list existing Github repositories.
 
-## CREATE AND ACTIVATE VIRTUAL ENVIRONMENT
+## GITHUB TOKENS
 
-> cd c:\github_api
+The programs expects two environment variables:
 
-> python -m venv .venv --prompt github_api
+- `GITHUB_TOKEN` to create new repositories
+- `GITHUB_TOTP` to generate TOTPs (time based one-time passwords)
 
-> .venv\Scripts\activate
+## INITIALIZE YOUR DEVELOPMENNT ENVIRONMENT
 
-## INSTALL PYTHON PACKAGES
+PySide6 is very big Python package. We want to install it system-wide (not in our virtual environment directory)
 
-> (github_api) pip install -r requirements.txt
+Install PySide6 on your system:
+
+> pip install pyside6 -U
+
+Create virtual environment directory:
+
+> mkdir .venv
+
+Create virutal environment in the directory `.venv`.
+The option `--site-packages` enables system-wide Python packages.
+
+> pipenv install --site-packages
+
+> pipenv shell
 
 ## RUN GUI APPLICATION
 
-> c:\github_api\.venv\Scripts\python.exe c:\github_api\github_gui.pyw
+> (github_api) python github_gui.pyw
