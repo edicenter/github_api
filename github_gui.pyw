@@ -1,9 +1,12 @@
+import traceback
+from github_repositories_model import GithubRepo, GithubRepositoriesModel
 import os
 import pathlib
+import pprint
 import sys
 import webbrowser
 from datetime import datetime
-
+from pprint import pprint
 import PySide6.QtCore as core
 import PySide6.QtGui as gui
 import PySide6.QtWidgets as widgets
@@ -12,6 +15,7 @@ import github
 import totp
 
 GITHUB_TOKEN = 'GITHUB_TOKEN'
+GITHUB_OWNER = 'GITHUB_OWNER'
 GITHUB_TOTP = 'GITHUB_TOTP'
 
 
@@ -21,6 +25,10 @@ def get_github_totp_token():
 
 def get_github_token():
     return os.environ.get(GITHUB_TOKEN, None)
+
+
+def get_github_owner():
+    return os.environ.get(GITHUB_OWNER, None)
 
 
 class RepoLoaderThread(core.QThread):
@@ -34,40 +42,61 @@ class RepoLoaderThread(core.QThread):
     @core.Slot()
     def run(self):
         try:
-            self.result.emit(
-                list(github.list_repositories(self._token)))
+            repos = list(github.list_repositories(self._token))
+            pprint(repos[0])
+            self.result.emit(GithubRepositoriesModel(repos))
         except Exception as e:
             self.error.emit(e)
 
 
+class MessageDialog(widgets.QDialog):
+    def __init__(self, title: str, message: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        buttons = widgets.QDialogButtonBox.StandardButton.Ok
+        buttonBox = widgets.QDialogButtonBox(buttons)
+        buttonBox.accepted.connect(self.accept)
+        self.layout = widgets.QVBoxLayout()
+        txt_message = widgets.QTextEdit()
+        txt_message.insertPlainText(message)
+        txt_message.setReadOnly(True)
+        p = txt_message.palette()
+        p.setColor(gui.QPalette.ColorRole.Base,
+                   gui.QColor.fromRgb(240, 240, 240))
+        txt_message.setPalette(p)
+        self.layout.addWidget(txt_message)
+        self.layout.addWidget(buttonBox)
+        self.setLayout(self.layout)
+        self.resize(700, 400)
+
+
 class TableModel(core.QAbstractTableModel):
 
-    def __init__(self, data, column_labels):
+    def __init__(self, model: GithubRepositoriesModel):
         super().__init__()
-        self._data = data
-        self._column_labels = column_labels
+        self._model = model
 
     def headerData(self, section, orientation, role=core.Qt.DisplayRole):
         if orientation == core.Qt.Horizontal and role == core.Qt.DisplayRole:
-            return self._column_labels[section]
+            return self._model.column_label(section)
         return super().headerData(section, orientation, role)
 
     def sort(self, column_index: int, sort_order: gui.Qt.SortOrder):
-        self._data.sort(
-            key=lambda row: row[column_index], reverse=sort_order.value)
+        self._model.sort(column_index, descending=True if sort_order ==
+                         gui.Qt.SortOrder.DescendingOrder else False)
         self.layoutChanged.emit()
 
     def rowCount(self, index):
         # The length of the outer list.
-        return len(self._data)
+        return self._model.row_count()
 
     def columnCount(self, index):
         # The following takes the first sub-list, and returns
         # the length (only works if all rows are an equal length)
-        return len(self._data[0])
+        return self._model.column_count()
 
     def data(self, index, role):
-        value = self._data[index.row()][index.column()]
+        value = self._model.get_data(index.row(), index.column())
 
         if role == core.Qt.ItemDataRole.DisplayRole:
             # See below for the nested-list data structure.
@@ -115,20 +144,58 @@ class TableModel(core.QAbstractTableModel):
         #         return gui.QColor(COLORS[value])
 
 
+class RepositoryFormWidget(widgets.QWidget):
+
+    def __init__(self):
+        super().__init__()
+
+        layout = widgets.QGridLayout()
+        self.setLayout(layout)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        row = 0
+        layout.addWidget(widgets.QLabel("Repository name: "),
+                         row, 0, core.Qt.AlignmentFlag.AlignRight)
+        self.txt_repository_name = widgets.QLineEdit()
+        # self.txt_repository_name.setFocusPolicy(
+        #     core.Qt.FocusPolicy.StrongFocus)
+        layout.addWidget(self.txt_repository_name, row, 1)
+
+        row += 1
+
+        layout.addWidget(widgets.QLabel("Repository description:"),
+                         row, 0, core.Qt.AlignmentFlag.AlignRight)
+        self.txt_repository_description = widgets.QLineEdit(self)
+        layout.addWidget(self.txt_repository_description, row, 1)
+
+        row += 1
+
+        layout.addWidget(widgets.QLabel("Private?:"),
+                         row, 0, core.Qt.AlignmentFlag.AlignRight)
+        self.checkbox_private = widgets.QCheckBox(self)
+        self.checkbox_private.setChecked(True)
+        layout.addWidget(self.checkbox_private, row, 1)
+
+
+class RepositoryFormDialog(widgets.QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumWidth(500)
+        self.setWindowTitle("Edit repository")
+        buttons = widgets.QDialogButtonBox.Ok | widgets.QDialogButtonBox.Cancel
+        self.buttonBox = widgets.QDialogButtonBox(buttons)
+        self.buttonBox.accepted.connect(self.accept)
+        self.buttonBox.rejected.connect(self.reject)
+        self.layout = widgets.QVBoxLayout()
+        self.repo_form = RepositoryFormWidget()
+        self.layout.addWidget(self.repo_form)
+        self.layout.addWidget(self.buttonBox)
+        self.setLayout(self.layout)
+
+
 class TabRepositoriesTable(widgets.QWidget):
 
-    COLUMNS = [
-        {'property': 'name', 'label': 'Name'},
-        {'property': 'visibility', 'label': 'Visibility'},
-        {'property': 'size', 'label': 'Size', 'convert_func': int},
-        {'property': 'clone_url', 'label': 'URL'},
-        {'property': 'language', 'label': 'Language'},
-        {'property': 'created_at', 'label': 'Date Created',
-            'convert_func': datetime.fromisoformat},
-        {'property': 'pushed_at', 'label': 'Date pushed',
-            'convert_func': datetime.fromisoformat},
-        {'property': 'description', 'label': 'Description'},
-    ]
     TITLE = "All Github repositories"
 
     def __init__(self, window: widgets.QMainWindow):
@@ -136,8 +203,6 @@ class TabRepositoriesTable(widgets.QWidget):
 
         self._window = window
         self._thread: RepoLoaderThread = None
-        self._column_labels = [c['label'] for c in self.COLUMNS]
-        self._github_repos = []
 
         layout = widgets.QVBoxLayout()
         self.setLayout(layout)
@@ -164,22 +229,48 @@ class TabRepositoriesTable(widgets.QWidget):
         self.start_load_repositories()
 
     def handler_table_context_menu_requested(self, pos: core.QPoint):
-        # self.table.rowAt(pos.y)
-        model_index = self.table.selectionModel().selectedRows()[0]
-        repo = self._github_repos[model_index.row()]
-        url = repo['clone_url']
+
+        # https://doc.qt.io/qtforpython-6/PySide6/QtCore/QItemSelectionModel.html
+        # https://doc.qt.io/qt-6/qitemselectionmodel.html
+        sel_model: core.QItemSelectionModel = self.table.selectionModel()
+        model_index: core.QModelIndex = sel_model.selectedRows()[0]
+        row: int = model_index.row()
+        table_model: TableModel = sel_model.model()
+        repo = table_model._model.get_repo(row)
 
         menu = widgets.QMenu(self)
 
         action = gui.QAction("Copy URL to clipboard", self)
-        action.triggered.connect(lambda: gui.QClipboard().setText(url))
+        action.triggered.connect(lambda: gui.QClipboard().setText(repo.url))
         menu.addAction(action)
 
         action = gui.QAction("Open in web browser", self)
-        action.triggered.connect(lambda: webbrowser.open(url))
+        action.triggered.connect(lambda: webbrowser.open(repo.url))
+        menu.addAction(action)
+
+        action = gui.QAction("Edit", self)
+        action.triggered.connect(lambda: self.handler_edit_repository(repo))
         menu.addAction(action)
 
         menu.exec(self.table.mapToGlobal(pos))
+
+    def handler_edit_repository(self, repo: GithubRepo):
+        d = RepositoryFormDialog(self._window)
+        d.repo_form.txt_repository_name.setText(repo.name)
+        d.repo_form.txt_repository_description.setText(
+            repo.description)
+        d.repo_form.checkbox_private.setChecked(repo.private)
+        if d.exec() == widgets.QDialog.DialogCode.Accepted:
+            print("GITHUB EDIT REPO")
+            result = github.update_repository(token=get_github_token(),
+                                              owner=get_github_owner(),
+                                              repo=repo.name,
+                                              clone_url=repo.clone_url,
+                                              new_name=d.repo_form.txt_repository_name.text(),
+                                              new_description=d.repo_form.txt_repository_description.text(),
+                                              new_private=d.repo_form.checkbox_private.isChecked())
+            MessageDialog("Github repository updated",
+                          result, self._window).exec()
 
     # override
     def showEvent(self, event: gui.QShowEvent):
@@ -203,33 +294,24 @@ class TabRepositoriesTable(widgets.QWidget):
 
     def show_loading_error(self, e: Exception):
         self.btn_load.setEnabled(True)
-        msgbox = widgets.QMessageBox()
-        msgbox.setWindowTitle("Error")
-        msgbox.setText("Error loading repository")
-        msgbox.setInformativeText(str(e))
-        # msgbox.setDetailedText(str(e))
-        msgbox.exec()
+        MessageDialog("Error loading repository",
+                      "".join(traceback.format_exception(e)),
+                      self).exec()
 
-    def loading_repositories_finished(self, github_repos):
-        self.btn_load.setEnabled(True)
-        self._window.statusBar().showMessage(
-            f"{len(github_repos)} repositories found on Github")
-        # Last pushed repos should be displayed first
-        github_repos.sort(key=lambda r: r['pushed_at'], reverse=True)
-        self._github_repos = []
-        for row_index, repo in enumerate(github_repos):
-            row = dict()
-            for column_index, column in enumerate(self.COLUMNS):
-                property = column['property']
-                value = repo[property]
-                if (convert_func := column.get('convert_func')) and convert_func:
-                    value = convert_func(value)
-                row[property] = value
-            self._github_repos.append(row)
-
-        data = [[*row.values()] for row in self._github_repos]
-        self.table.setModel(TableModel(data, self._column_labels))
-        self.table.resizeColumnsToContents()
+    def loading_repositories_finished(self, model: GithubRepositoriesModel):
+        try:
+            self.btn_load.setEnabled(True)
+            self._window.statusBar().showMessage(
+                f"{model.row_count()} repositories found on Github")
+            # Last pushed repos should be displayed first
+            model.sort_by(lambda r: r.date_pushed)
+            self.table.setModel(TableModel(model))
+            self.table.resizeColumnsToContents()
+        except Exception as e:
+            MessageDialog(
+                "Error after successfull repositiries loading",
+                "".join(traceback.format_exception(e)),
+                self).exec()
 
 
 class TabTOTP(widgets.QWidget):
@@ -257,7 +339,7 @@ class TabTOTP(widgets.QWidget):
 
         lbl = widgets.QLabel(
             """
-            Click on the button below to copy the TOTP to the clipboard.            
+            Click on the button below to copy the TOTP to the clipboard.
             You will need it, for example, to confirm deleting a repository on the Github website.
             """)
         lbl.setAlignment(core.Qt.AlignmentFlag.AlignCenter)
@@ -332,42 +414,21 @@ class TabCreateRepository(widgets.QWidget):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
 
-        row = 0
-        layout.addWidget(widgets.QLabel("Repository name: "),
-                         row, 0, core.Qt.AlignmentFlag.AlignRight)
-        txt_repository_name = widgets.QLineEdit()
-        # self.txt_repository_name.setFocusPolicy(
-        #     core.Qt.FocusPolicy.StrongFocus)
-        layout.addWidget(txt_repository_name, row, 1)
+        # row = 0
 
-        row += 1
-
-        layout.addWidget(widgets.QLabel("Repository description:"),
-                         row, 0, core.Qt.AlignmentFlag.AlignRight)
-        txt_repository_description = widgets.QLineEdit(self)
-        layout.addWidget(txt_repository_description, row, 1)
-
-        row += 1
-
-        layout.addWidget(widgets.QLabel("Private?:"),
-                         row, 0, core.Qt.AlignmentFlag.AlignRight)
-        checkbox_private = widgets.QCheckBox(self)
-        checkbox_private.setChecked(True)
-        layout.addWidget(checkbox_private, row, 1)
-
-        row += 1
+        repo_form = RepositoryFormWidget()
+        layout.addWidget(repo_form)
 
         btn_create_new_repository = widgets.QPushButton(
             "Create new Github repository")
-        layout.addWidget(btn_create_new_repository, row,
-                         1, core.Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(btn_create_new_repository)
 
-        row += 1
+        # row += 1
 
         txt_info = widgets.QTextEdit(
             """
-            Once you've created a new repository, you will see here the GIT commands 
-            you can use to initialize Git version control for your project. 
+            Once you've created a new repository, you will see here the GIT commands
+            you can use to initialize Git version control for your project.
             These commands are executed in the directory containing your code.
             """)
         txt_info.setReadOnly(True)
@@ -377,8 +438,8 @@ class TabCreateRepository(widgets.QWidget):
         txt_info.setPalette(p)
 
         # txt_info.setTextBackgroundColor(gui.QColor(core.Qt.GlobalColor.red))
-        layout.setRowStretch(row, 1)
-        layout.addWidget(txt_info, row, 0, 1, 2)
+        # layout.setRowStretch(row, 1)
+        layout.addWidget(txt_info)
 
         if get_github_token() is None:
             self._window.statusBar().showMessage(
@@ -393,17 +454,17 @@ class TabCreateRepository(widgets.QWidget):
                         self, f"{GITHUB_TOKEN} missing", f"System environment variable '{GITHUB_TOKEN}' not found on this computer!")
                     return
 
-                repository_name = txt_repository_name.text().strip()
-                repository_description = txt_repository_description.text().strip()
+                repository_name = repo_form.txt_repository_name.text().strip()
+                repository_description = repo_form.txt_repository_description.text().strip()
                 if not repository_name:
                     widgets.QMessageBox.critical(
                         self, "Missing input", "Repository name is mandatory")
-                    txt_repository_name.setFocus()
+                    repo_form.txt_repository_name.setFocus()
                     return
                 result = github.create_repo(token=github_token,
                                             repo=repository_name,
                                             description=repository_description,
-                                            private=checkbox_private.isChecked())
+                                            private=repo_form.checkbox_private.isChecked())
                 txt_info.clear()
                 txt_info.append(f"Github repository '{repository_name}' with description '{
                                 repository_description}' created.\n\n")
