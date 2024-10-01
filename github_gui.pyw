@@ -24,11 +24,17 @@ def get_github_totp_token():
 
 
 def get_github_token():
-    return os.environ.get(GITHUB_TOKEN, None)
+    if GITHUB_TOKEN in os.environ:
+        return os.environ[GITHUB_TOKEN]
+    else:
+        raise Exception(f"Environment variable '{GITHUB_TOKEN}' not found.")
 
 
 def get_github_owner():
-    return os.environ.get(GITHUB_OWNER, None)
+    if GITHUB_OWNER in os.environ:    
+        return os.environ[GITHUB_OWNER]
+    else:
+        raise Exception(f"Environment variable '{GITHUB_OWNER}' not found.")
 
 
 class RepoLoaderThread(core.QThread):
@@ -255,22 +261,26 @@ class TabRepositoriesTable(widgets.QWidget):
         menu.exec(self.table.mapToGlobal(pos))
 
     def handler_edit_repository(self, repo: GithubRepo):
-        d = RepositoryFormDialog(self._window)
-        d.repo_form.txt_repository_name.setText(repo.name)
-        d.repo_form.txt_repository_description.setText(
-            repo.description)
-        d.repo_form.checkbox_private.setChecked(repo.private)
-        if d.exec() == widgets.QDialog.DialogCode.Accepted:
-            print("GITHUB EDIT REPO")
-            result = github.update_repository(token=get_github_token(),
-                                              owner=get_github_owner(),
-                                              repo=repo.name,
-                                              clone_url=repo.clone_url,
-                                              new_name=d.repo_form.txt_repository_name.text(),
-                                              new_description=d.repo_form.txt_repository_description.text(),
-                                              new_private=d.repo_form.checkbox_private.isChecked())
-            MessageDialog("Github repository updated",
-                          result, self._window).exec()
+        try:
+            d = RepositoryFormDialog(self._window)
+            d.repo_form.txt_repository_name.setText(repo.name)
+            d.repo_form.txt_repository_description.setText(
+                repo.description)
+            d.repo_form.checkbox_private.setChecked(repo.private)
+            if d.exec() == widgets.QDialog.DialogCode.Accepted:
+                print("GITHUB EDIT REPO")
+                result = github.update_repository(token=get_github_token(),
+                                                owner=get_github_owner(),
+                                                repo=repo.name,
+                                                clone_url=repo.clone_url,
+                                                new_name=d.repo_form.txt_repository_name.text(),
+                                                new_description=d.repo_form.txt_repository_description.text(),
+                                                new_private=d.repo_form.checkbox_private.isChecked())
+                MessageDialog("Github repository updated",
+                            result, self._window).exec()
+        except Exception as e:
+            MessageDialog("Error editing repository", "".join(traceback.format_exception(e)), self).exec()
+
 
     # override
     def showEvent(self, event: gui.QShowEvent):
@@ -470,12 +480,7 @@ class TabCreateRepository(widgets.QWidget):
                                 repository_description}' created.\n\n")
                 txt_info.append(result)
             except Exception as e:
-                msgbox = widgets.QMessageBox()
-                msgbox.setWindowTitle("Error")
-                msgbox.setText("Error creating repository")
-                msgbox.setInformativeText("here informativ text")
-                msgbox.setDetailedText(e.args)
-                msgbox.exec()
+                MessageDialog("Error creating repository", "".join(traceback.format_exception(e))).exec()
 
         btn_create_new_repository.clicked.connect(handler_btn_clicked)
 

@@ -83,7 +83,7 @@ def create_repo(token, repo, description=None, private=True, organization=None):
         json_response = response.json()
         pprint(json_response)
         result = f"OK. GITHUB RESOSITORY '{repo}' CREATED.\n"
-        result += f"HTML URL: {repo['html_url']}\n"
+        result += f"HTML URL: {json_response['html_url']}\n"
         result += "-"*50 + "\n\n"
         result += "git init\n"
         result += "git add .\n"
